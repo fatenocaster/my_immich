@@ -1,4 +1,4 @@
-name: Build Mobile
+name: Build Android APK
 
 on:
   workflow_dispatch:
@@ -9,13 +9,13 @@ on:
         type: string
     secrets:
       KEY_JKS:
-        required: true
+        required: false  # 改为可选，支持无 secrets 构建
       ALIAS:
-        required: true
+        required: false
       ANDROID_KEY_PASSWORD:
-        required: true
+        required: false
       ANDROID_STORE_PASSWORD:
-        required: true
+        required: false
   pull_request:
   push:
     branches: [main]
@@ -56,8 +56,8 @@ jobs:
     needs: pre-job
     permissions:
       contents: read
-    # Skip when PR from a fork
-    if: ${{ !github.event.pull_request.head.repo.fork && github.actor != 'dependabot[bot]' && needs.pre-job.outputs.should_run == 'true' }}
+    # 允许 fork 仓库构建，但跳过需要 secrets 的签名步骤
+    if: ${{ github.actor != 'dependabot[bot]' && needs.pre-job.outputs.should_run == 'true' }}
     runs-on: macos-14
 
     steps:
@@ -79,11 +79,17 @@ jobs:
           flutter-version-file: ./mobile/pubspec.yaml
           cache: true
 
-      - name: Create the Keystore
+      - name: Create the Keystore (if secrets available)
         env:
           KEY_JKS: ${{ secrets.KEY_JKS }}
         working-directory: ./mobile
-        run: echo $KEY_JKS | base64 -d > android/key.jks
+        run: |
+          if [ -n "$KEY_JKS" ]; then
+            echo "Creating keystore for signed build"
+            echo $KEY_JKS | base64 -d > android/key.jks
+          else
+            echo "No keystore secrets available, will build debug version"
+          fi
 
       - name: Get Packages
         working-directory: ./mobile
@@ -104,11 +110,18 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
-          flutter build apk --release
-          flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64
+          if [ -n "$ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ] && [ -n "$ANDROID_STORE_PASSWORD" ]; then
+            echo "Building signed release APK"
+            flutter build apk --release
+            flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64
+          else
+            echo "Building debug APK (no signing secrets available)"
+            flutter build apk --debug
+            flutter build apk --debug --split-per-abi --target-platform android-arm,android-arm64,android-x64
+          fi
 
       - name: Publish Android Artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-apk-signed
+          name: android-apk
           path: mobile/build/app/outputs/flutter-apk/*.apk
