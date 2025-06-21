@@ -54,11 +54,11 @@ jobs:
         run: echo "should_force=${{ steps.found_paths.outputs.workflow == 'true' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' }}" >> "$GITHUB_OUTPUT"
 
   build-sign-android:
-    name: Build and sign Android
+    name: Build and Sign Release Android APK
     needs: pre-job
     permissions:
       contents: read
-    # 允许 fork 仓库构建，但跳过需要 secrets 的签名步骤
+    # 需要所有签名证书才能构建 release 版本
     if: ${{ github.actor != 'dependabot[bot]' && needs.pre-job.outputs.should_run == 'true' }}
     runs-on: macos-14
 
@@ -81,17 +81,17 @@ jobs:
           flutter-version-file: ./mobile/pubspec.yaml
           cache: true
 
-      - name: Create the Keystore (if secrets available)
+      - name: Create the Keystore
         env:
           KEY_JKS: ${{ secrets.KEY_JKS }}
         working-directory: ./mobile
         run: |
-          if [ -n "$KEY_JKS" ]; then
-            echo "Creating keystore for signed build"
-            echo $KEY_JKS | base64 -d > android/key.jks
-          else
-            echo "No keystore secrets available, will build debug version"
+          if [ -z "$KEY_JKS" ]; then
+            echo "Error: KEY_JKS secret is required for release build"
+            exit 1
           fi
+          echo "Creating keystore for signed release build"
+          echo $KEY_JKS | base64 -d > android/key.jks
 
       - name: Get Packages
         working-directory: ./mobile
@@ -105,22 +105,40 @@ jobs:
         run: make pigeon
         working-directory: ./mobile
 
-      - name: Build Android App Bundle
+      - name: Validate Signing Secrets
+        env:
+          ALIAS: ${{ secrets.ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          if [ -z "$ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ] || [ -z "$ANDROID_STORE_PASSWORD" ]; then
+            echo "Error: All signing secrets are required (ALIAS, ANDROID_KEY_PASSWORD, ANDROID_STORE_PASSWORD)"
+            exit 1
+          fi
+          echo "All signing secrets are available"
+
+      - name: Build Signed Release APK
         working-directory: ./mobile
         env:
           ALIAS: ${{ secrets.ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
-          if [ -n "$ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ] && [ -n "$ANDROID_STORE_PASSWORD" ]; then
-            echo "Building signed release APK"
-            flutter build apk --release
-            flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64
-          else
-            echo "Building debug APK (no signing secrets available)"
-            flutter build apk --debug
-            flutter build apk --debug --split-per-abi --target-platform android-arm,android-arm64,android-x64
-          fi
+          echo "Building signed release APK..."
+          flutter build apk --release
+          echo "Building signed release APK with ABI splits..."
+          flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64
+
+      - name: Verify APK Signature
+        working-directory: ./mobile
+        run: |
+          echo "Verifying APK signatures..."
+          for apk in build/app/outputs/flutter-apk/*.apk; do
+            if [ -f "$apk" ]; then
+              echo "Checking signature for: $(basename $apk)"
+              $ANDROID_HOME/build-tools/*/apksigner verify --verbose "$apk"
+            fi
+          done
 
       - name: Publish Android Artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
