@@ -137,13 +137,21 @@ jobs:
               
               # 验证 APK 签名
               echo "🔐 验证 APK 签名..."
-              if [ -f "$APKSIGNER" ]; then
-                if java -jar "$APKSIGNER" verify --verbose "$apk"; then
-                  echo "✅ APK 签名验证成功"
-                  echo "✅ 签名状态: 验证通过" >> "$CHECKSUM_FILE"
+              
+              # 首先尝试使用 apksigner（直接执行，不用 java -jar）
+              if command -v apksigner >/dev/null 2>&1; then
+                if apksigner verify --verbose "$apk" 2>/dev/null; then
+                  echo "✅ APK 签名验证成功 (apksigner)"
+                  echo "✅ 签名状态: 验证通过 (apksigner)" >> "$CHECKSUM_FILE"
                 else
-                  echo "❌ APK 签名验证失败"
-                  echo "❌ 签名状态: 验证失败" >> "$CHECKSUM_FILE"
+                  echo "⚠️  apksigner 验证失败，尝试 jarsigner..."
+                  if jarsigner -verify -verbose "$apk" >/dev/null 2>&1; then
+                    echo "✅ APK 签名验证成功 (jarsigner)"
+                    echo "✅ 签名状态: 验证通过 (jarsigner)" >> "$CHECKSUM_FILE"
+                  else
+                    echo "❌ APK 签名验证失败"  
+                    echo "❌ 签名状态: 验证失败" >> "$CHECKSUM_FILE"
+                  fi
                 fi
               else
                 echo "⚠️  apksigner 未找到，使用 jarsigner 验证..."
@@ -236,77 +244,74 @@ jobs:
           cp apk_checksums.txt ../release-files/
           
           # 创建发布说明文件
-          cat > ../release-files/RELEASE_NOTES.md << EOF
-          # Immich Mobile App Release ${{ github.ref_name }}
-          
-          这是 Immich 移动应用的正式发布版本。
-          
-          **标签版本**: ${{ github.ref_name }}
-          **构建时间**: ${{ github.run_id }}
-          **提交哈希**: ${{ github.sha }}
-          **构建平台**: macOS-14
-          
-          ## 📱 APK 文件
-          
-          请下载适合你设备架构的 APK 文件：
-          EOF
+          echo "# Immich Mobile App Release ${{ github.ref_name }}" > ../release-files/RELEASE_NOTES.md
+          echo "" >> ../release-files/RELEASE_NOTES.md
+          echo "这是 Immich 移动应用的正式发布版本。" >> ../release-files/RELEASE_NOTES.md
+          echo "" >> ../release-files/RELEASE_NOTES.md
+          echo "**标签版本**: ${{ github.ref_name }}" >> ../release-files/RELEASE_NOTES.md
+          echo "**构建时间**: ${{ github.run_id }}" >> ../release-files/RELEASE_NOTES.md
+          echo "**提交哈希**: ${{ github.sha }}" >> ../release-files/RELEASE_NOTES.md
+          echo "**构建平台**: macOS-14" >> ../release-files/RELEASE_NOTES.md
+          echo "" >> ../release-files/RELEASE_NOTES.md
+          echo "## 📱 APK 文件" >> ../release-files/RELEASE_NOTES.md
+          echo "" >> ../release-files/RELEASE_NOTES.md
+          echo "请下载适合你设备架构的 APK 文件：" >> ../release-files/RELEASE_NOTES.md
+          echo "" >> ../release-files/RELEASE_NOTES.md
           
           # 列出所有 APK 文件并添加到发布说明
           cd ../release-files
           for apk in *.apk; do
             if [ -f "$apk" ]; then
-              apk_size=\$(ls -lh "\$apk" | awk '{print \$5}')
-              echo "- **\$apk** (\$apk_size)" >> RELEASE_NOTES.md
+              apk_size=$(ls -lh "$apk" | awk '{print $5}')
+              echo "- **$apk** ($apk_size)" >> RELEASE_NOTES.md
             fi
           done
           
-          cat >> RELEASE_NOTES.md << EOF
-          
-          ### 架构说明
-          - \`app-release.apk\` - 通用版本，包含所有架构（推荐下载）
-          - \`app-arm64-v8a-release.apk\` - ARM64 设备专用（现代 Android 设备）
-          - \`app-armeabi-v7a-release.apk\` - ARM 32位设备专用（较老设备）
-          - \`app-x86_64-release.apk\` - x86 64位设备专用（模拟器或特殊设备）
-          
-          ## 🔐 安全验证
-          
-          - 下载 \`apk_checksums.txt\` 文件验证 APK 完整性
-          - 所有 APK 文件均已使用发布证书签名，确保安全可靠
-          - 支持 MD5、SHA1、SHA256 多种校验算法
-          
-          ## 📋 安装说明
-          
-          1. 下载适合你设备架构的 APK 文件（推荐下载通用版本）
-          2. 在 Android 设备上启用"未知来源"安装：
-             - 设置 → 安全 → 未知来源（或应用安装权限）
-          3. 使用文件管理器打开下载的 APK 文件进行安装
-          4. 首次安装可能需要授予相关权限
-          
-          ## 🔄 更新说明
-          
-          - 如果已安装旧版本，新版本会自动覆盖安装
-          - 建议在安装前备份重要数据
-          - 支持从 Google Play 版本升级到此版本
-          
-          ## 🐛 问题反馈
-          
-          如遇到问题，请在 GitHub Issues 中反馈：
-          https://github.com/${{ github.repository }}/issues
-          
-          ## 源码信息
-          
-          - 基于提交: ${{ github.sha }}
-          - 构建分支: ${{ github.ref_name }}
-          - Flutter 版本: Stable Channel
-          - 签名状态: 已签名
-          EOF
+          # 添加其余说明
+          echo "" >> RELEASE_NOTES.md
+          echo "### 架构说明" >> RELEASE_NOTES.md
+          echo "- \`app-release.apk\` - 通用版本，包含所有架构（推荐下载）" >> RELEASE_NOTES.md
+          echo "- \`app-arm64-v8a-release.apk\` - ARM64 设备专用（现代 Android 设备）" >> RELEASE_NOTES.md
+          echo "- \`app-armeabi-v7a-release.apk\` - ARM 32位设备专用（较老设备）" >> RELEASE_NOTES.md
+          echo "- \`app-x86_64-release.apk\` - x86 64位设备专用（模拟器或特殊设备）" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## 🔐 安全验证" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "- 下载 \`apk_checksums.txt\` 文件验证 APK 完整性" >> RELEASE_NOTES.md
+          echo "- 所有 APK 文件均已使用发布证书签名，确保安全可靠" >> RELEASE_NOTES.md
+          echo "- 支持 MD5、SHA1、SHA256 多种校验算法" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## 📋 安装说明" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "1. 下载适合你设备架构的 APK 文件（推荐下载通用版本）" >> RELEASE_NOTES.md
+          echo "2. 在 Android 设备上启用\"未知来源\"安装：" >> RELEASE_NOTES.md
+          echo "   - 设置 → 安全 → 未知来源（或应用安装权限）" >> RELEASE_NOTES.md
+          echo "3. 使用文件管理器打开下载的 APK 文件进行安装" >> RELEASE_NOTES.md
+          echo "4. 首次安装可能需要授予相关权限" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## 🔄 更新说明" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "- 如果已安装旧版本，新版本会自动覆盖安装" >> RELEASE_NOTES.md
+          echo "- 建议在安装前备份重要数据" >> RELEASE_NOTES.md
+          echo "- 支持从 Google Play 版本升级到此版本" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## 🐛 问题反馈" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "如遇到问题，请在 GitHub Issues 中反馈。" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## 源码信息" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "- 基于提交: ${{ github.sha }}" >> RELEASE_NOTES.md
+          echo "- 构建分支: ${{ github.ref_name }}" >> RELEASE_NOTES.md
+          echo "- Flutter 版本: Stable Channel" >> RELEASE_NOTES.md
+          echo "- 签名状态: 已签名" >> RELEASE_NOTES.md
           
           echo ""
           echo "📋 发布文件列表:"
-          ls -la ../release-files/
+          ls -la
           echo ""
           echo "📄 文件大小统计:"
-          du -h ../release-files/*
+          du -h *
 
       - name: Debug Release Files
         run: |
