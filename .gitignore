@@ -26,4 +26,4 @@ mobile/ios/fastlane/report.xml
 # 临时签名证书目录（包含敏感信息）
 mobile/android/temp_keystore/
 
-vite.config.js.timestamp-*
+vite.config.js.timestamp-* 
