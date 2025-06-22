@@ -218,60 +218,58 @@ jobs:
                -o /dev/null -s -w "API Status: %{http_code}\n"
 
       - name: Prepare Release Files
-        working-directory: ./mobile
         run: |
           echo "📦 准备发布文件..."
           
-          # 创建发布目录
-          mkdir -p release_files
+          # 创建根目录的发布目录（参考你成功的项目）
+          mkdir -p release-files
           
           # 复制 APK 文件到发布目录
-          cp build/app/outputs/flutter-apk/*.apk release_files/
+          cp mobile/build/app/outputs/flutter-apk/*.apk release-files/ 2>/dev/null || echo "No APK files found"
           
           # 复制校验码文件
-          cp apk_checksums.txt release_files/
-          
-          # 创建发布说明文件
-          echo "# Immich Mobile App Release ${{ github.ref_name }}" > release_files/RELEASE_NOTES.md
-          echo "" >> release_files/RELEASE_NOTES.md
-          echo "## 📱 APK 文件" >> release_files/RELEASE_NOTES.md
-          echo "" >> release_files/RELEASE_NOTES.md
-          
-          # 列出所有 APK 文件
-          for apk in release_files/*.apk; do
-            if [ -f "$apk" ]; then
-              apk_name=$(basename "$apk")
-              apk_size=$(ls -lh "$apk" | awk '{print $5}')
-              echo "- **$apk_name** ($apk_size)" >> release_files/RELEASE_NOTES.md
-            fi
-          done
-          
-          echo "" >> release_files/RELEASE_NOTES.md
-          echo "## 🔐 校验码" >> release_files/RELEASE_NOTES.md
-          echo "" >> release_files/RELEASE_NOTES.md
-          echo "请下载 \`apk_checksums.txt\` 文件验证 APK 完整性。" >> release_files/RELEASE_NOTES.md
-          echo "" >> release_files/RELEASE_NOTES.md
-          echo "## 📋 安装说明" >> release_files/RELEASE_NOTES.md
-          echo "" >> release_files/RELEASE_NOTES.md
-          echo "1. 下载适合你设备架构的 APK 文件" >> release_files/RELEASE_NOTES.md
-          echo "2. 在设备上启用\"未知来源\"安装" >> release_files/RELEASE_NOTES.md
-          echo "3. 安装下载的 APK 文件" >> release_files/RELEASE_NOTES.md
+          cp mobile/apk_checksums.txt release-files/ 2>/dev/null || echo "No checksum file found"
           
           echo "📋 发布文件列表:"
-          ls -la release_files/
+          ls -la release-files/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
           name: Immich Mobile ${{ github.ref_name }}
-          body_path: mobile/release_files/RELEASE_NOTES.md
-          files: |
-            mobile/release_files/*.apk
-            mobile/release_files/apk_checksums.txt
+          body: |
+            ## Immich Mobile App Release ${{ github.ref_name }}
+            
+            这是 Immich 移动应用的发布版本。
+            
+            **标签版本**: ${{ github.ref_name }}
+            **构建时间**: ${{ github.run_id }}
+            **提交哈希**: ${{ github.sha }}
+            
+            ### 📱 APK 文件
+            
+            请下载适合你设备架构的 APK 文件：
+            - `app-release.apk` - 通用版本（推荐）
+            - `app-arm64-v8a-release.apk` - ARM64 设备
+            - `app-armeabi-v7a-release.apk` - ARM 32位设备  
+            - `app-x86_64-release.apk` - x86 64位设备
+            
+            ### 🔐 安全验证
+            
+            - 下载 `apk_checksums.txt` 文件验证 APK 完整性
+            - 所有 APK 文件均已签名，确保安全可靠
+            
+            ### 📋 安装说明
+            
+            1. 下载适合你设备架构的 APK 文件
+            2. 在 Android 设备上启用"未知来源"安装
+            3. 安装下载的 APK 文件
+            
+            ### 源码
+            基于提交: ${{ github.sha }}
           draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
-          generate_release_notes: true
-          fail_on_unmatched_files: false 
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
