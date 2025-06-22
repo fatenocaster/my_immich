@@ -1,0 +1,277 @@
+name: Release Android APK
+
+on:
+  workflow_dispatch:  # 保留手动触发用于测试
+  push:
+    tags:
+      - 'v*'  # 只在推送 v* 标签时触发构建
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write  # 需要写权限来创建 GitHub Release
+  actions: write   # Actions 权限
+  packages: write  # 包权限
+  id-token: write  # ID token 权限
+
+jobs:
+  pre-job:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should_run: ${{ steps.check_conditions.outputs.should_run }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Check run conditions
+        id: check_conditions
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Actor: ${{ github.actor }}"
+          
+          # 只在标签推送或手动触发时运行
+          if [[ "${{ github.ref }}" == refs/tags/v* ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Tag push or manual trigger detected, will run build"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not a tag push or manual trigger, skipping build"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-sign-android:
+    name: Build, Sign and Release Android APK
+    needs: pre-job
+    permissions:
+      contents: read
+    if: ${{ github.actor != 'dependabot[bot]' && needs.pre-job.outputs.should_run == 'true' }}
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046 # v2.19.0
+        with:
+          channel: 'stable'
+          flutter-version-file: ./mobile/pubspec.yaml
+          cache: true
+
+      - name: Create the Keystore
+        env:
+          KEY_JKS: ${{ secrets.KEY_JKS }}
+        working-directory: ./mobile
+        run: |
+          if [ -z "$KEY_JKS" ]; then
+            echo "Error: KEY_JKS secret is required for release build"
+            exit 1
+          fi
+          echo "Creating keystore for signed release build"
+          echo $KEY_JKS | base64 -d > android/key.jks
+
+      - name: Get Packages
+        working-directory: ./mobile
+        run: flutter pub get
+
+      - name: Generate translation file
+        run: make translation
+        working-directory: ./mobile
+
+      - name: Generate platform APIs
+        run: make pigeon
+        working-directory: ./mobile
+
+      - name: Validate Signing Secrets
+        env:
+          ALIAS: ${{ secrets.ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          if [ -z "$ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ] || [ -z "$ANDROID_STORE_PASSWORD" ]; then
+            echo "Error: All signing secrets are required (ALIAS, ANDROID_KEY_PASSWORD, ANDROID_STORE_PASSWORD)"
+            exit 1
+          fi
+          echo "All signing secrets are available"
+
+      - name: Build Signed Release APK
+        working-directory: ./mobile
+        env:
+          ALIAS: ${{ secrets.ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          echo "Building signed release APK..."
+          flutter build apk --release
+          echo "Building signed release APK with ABI splits..."
+          flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64
+
+      - name: Verify APK Signature and Generate Checksums
+        working-directory: ./mobile
+        run: |
+          echo "========================================="
+          echo "🔍 APK 签名验证与校验码生成"
+          echo "========================================="
+          
+          # 查找可用的 build-tools 版本
+          BUILD_TOOLS_VERSION=$(ls "$ANDROID_HOME/build-tools/" | sort -V | tail -1)
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
+          
+          echo "🔧 Android Build Tools 版本: $BUILD_TOOLS_VERSION"
+          echo "🔧 apksigner 路径: $APKSIGNER"
+          
+          # 创建校验码报告文件
+          CHECKSUM_FILE="apk_checksums.txt"
+          echo "APK 校验码与签名验证报告" > "$CHECKSUM_FILE"
+          echo "生成时间: $(date)" >> "$CHECKSUM_FILE"
+          echo "=========================================" >> "$CHECKSUM_FILE"
+          
+          for apk in build/app/outputs/flutter-apk/*.apk; do
+            if [ -f "$apk" ]; then
+              APK_NAME=$(basename "$apk")
+              APK_SIZE=$(ls -lh "$apk" | awk '{print $5}')
+              
+              echo ""
+              echo "📱 处理 APK: $APK_NAME"
+              echo "📏 文件大小: $APK_SIZE"
+              
+              # 写入报告文件
+              echo "" >> "$CHECKSUM_FILE"
+              echo "📱 APK: $APK_NAME" >> "$CHECKSUM_FILE"
+              echo "📏 文件大小: $APK_SIZE" >> "$CHECKSUM_FILE"
+              
+              # 验证 APK 签名
+              echo "🔐 验证 APK 签名..."
+              if [ -f "$APKSIGNER" ]; then
+                # 使用正确的 apksigner 命令格式
+                if java -jar "$APKSIGNER" verify --verbose "$apk"; then
+                  echo "✅ APK 签名验证成功"
+                  echo "✅ 签名状态: 验证通过" >> "$CHECKSUM_FILE"
+                else
+                  echo "❌ APK 签名验证失败"
+                  echo "❌ 签名状态: 验证失败" >> "$CHECKSUM_FILE"
+                fi
+              else
+                echo "⚠️  apksigner 未找到，使用 jarsigner 验证..."
+                if jarsigner -verify -verbose "$apk" >/dev/null 2>&1; then
+                  echo "✅ APK 签名验证成功 (jarsigner)"
+                  echo "✅ 签名状态: 验证通过 (jarsigner)" >> "$CHECKSUM_FILE"
+                else
+                  echo "❌ APK 签名验证失败 (jarsigner)"  
+                  echo "❌ 签名状态: 验证失败 (jarsigner)" >> "$CHECKSUM_FILE"
+                fi
+              fi
+              
+              # 生成文件校验码
+              echo ""
+              echo "📊 生成文件校验码..."
+              
+              MD5_HASH=$(md5 "$apk" 2>/dev/null | awk '{print $NF}' || md5sum "$apk" | awk '{print $1}')
+              SHA1_HASH=$(shasum -a 1 "$apk" | awk '{print $1}')
+              SHA256_HASH=$(shasum -a 256 "$apk" | awk '{print $1}')
+              
+              echo "🔹 MD5:    $MD5_HASH"
+              echo "🔹 SHA1:   $SHA1_HASH" 
+              echo "🔹 SHA256: $SHA256_HASH"
+              
+              # 写入校验码到报告文件
+              echo "🔹 MD5:    $MD5_HASH" >> "$CHECKSUM_FILE"
+              echo "🔹 SHA1:   $SHA1_HASH" >> "$CHECKSUM_FILE"
+              echo "🔹 SHA256: $SHA256_HASH" >> "$CHECKSUM_FILE"
+              
+              echo "========================================="
+            fi
+          done
+          
+          echo ""
+          echo "✅ 所有 APK 处理完成!"
+          echo ""
+          echo "📄 完整校验码报告:"
+          cat "$CHECKSUM_FILE"
+
+      - name: Check GitHub Token Permissions
+        run: |
+          echo "🔍 检查 GitHub Token 权限..."
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Actor: $GITHUB_ACTOR"  
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Ref: $GITHUB_REF"
+          
+          # 测试 API 访问权限
+          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/vnd.github.v3+json" \
+               "https://api.github.com/repos/$GITHUB_REPOSITORY" \
+               -o /dev/null -s -w "API Status: %{http_code}\n"
+
+      - name: Prepare Release Files
+        working-directory: ./mobile
+        run: |
+          echo "📦 准备发布文件..."
+          
+          # 创建发布目录
+          mkdir -p release_files
+          
+          # 复制 APK 文件到发布目录
+          cp build/app/outputs/flutter-apk/*.apk release_files/
+          
+          # 复制校验码文件
+          cp apk_checksums.txt release_files/
+          
+          # 创建发布说明文件
+          echo "# Immich Mobile App Release ${{ github.ref_name }}" > release_files/RELEASE_NOTES.md
+          echo "" >> release_files/RELEASE_NOTES.md
+          echo "## 📱 APK 文件" >> release_files/RELEASE_NOTES.md
+          echo "" >> release_files/RELEASE_NOTES.md
+          
+          # 列出所有 APK 文件
+          for apk in release_files/*.apk; do
+            if [ -f "$apk" ]; then
+              apk_name=$(basename "$apk")
+              apk_size=$(ls -lh "$apk" | awk '{print $5}')
+              echo "- **$apk_name** ($apk_size)" >> release_files/RELEASE_NOTES.md
+            fi
+          done
+          
+          echo "" >> release_files/RELEASE_NOTES.md
+          echo "## 🔐 校验码" >> release_files/RELEASE_NOTES.md
+          echo "" >> release_files/RELEASE_NOTES.md
+          echo "请下载 \`apk_checksums.txt\` 文件验证 APK 完整性。" >> release_files/RELEASE_NOTES.md
+          echo "" >> release_files/RELEASE_NOTES.md
+          echo "## 📋 安装说明" >> release_files/RELEASE_NOTES.md
+          echo "" >> release_files/RELEASE_NOTES.md
+          echo "1. 下载适合你设备架构的 APK 文件" >> release_files/RELEASE_NOTES.md
+          echo "2. 在设备上启用\"未知来源\"安装" >> release_files/RELEASE_NOTES.md
+          echo "3. 安装下载的 APK 文件" >> release_files/RELEASE_NOTES.md
+          
+          echo "📋 发布文件列表:"
+          ls -la release_files/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Immich Mobile ${{ github.ref_name }}
+          body_path: mobile/release_files/RELEASE_NOTES.md
+          files: |
+            mobile/release_files/*.apk
+            mobile/release_files/apk_checksums.txt
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false 

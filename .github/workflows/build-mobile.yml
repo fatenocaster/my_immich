@@ -1,236 +1,115 @@
-name: Release Android APK
+name: Build and Release Mobile App (Test Version)
 
 on:
-  workflow_dispatch:  # 保留手动触发用于测试
   push:
     tags:
-      - 'v*'  # 只在推送 v* 标签时触发构建
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: write  # 需要写权限来创建 GitHub Release
-  actions: write   # Actions 权限
-  packages: write  # 包权限
-  id-token: write  # ID token 权限
+      - 'v*'
 
 jobs:
-  pre-job:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      should_run: ${{ steps.check_conditions.outputs.should_run }}
+  build:
+    runs-on: macos-14
+    timeout-minutes: 60
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
+        uses: actions/checkout@v4
 
-      - name: Check run conditions
-        id: check_conditions
+      # 注释掉所有编译相关步骤，只测试 Release 功能
+      # - name: Setup Java
+      #   uses: actions/setup-java@v4
+      #   with:
+      #     distribution: 'zulu'
+      #     java-version: '17'
+
+      # - name: Setup Flutter
+      #   uses: subosito/flutter-action@v2
+      #   with:
+      #     flutter-version: '3.29.3'
+      #     channel: 'stable'
+      #     cache: true
+
+      # - name: Verify signing keys
+      #   run: |
+      #     if [ -z "${{ secrets.KEY_JKS }}" ] || [ -z "${{ secrets.ALIAS }}" ] || [ -z "${{ secrets.ANDROID_KEY_PASSWORD }}" ] || [ -z "${{ secrets.ANDROID_STORE_PASSWORD }}" ]; then
+      #       echo "❌ 缺少必要的签名密钥配置"
+      #       echo "请确保以下 GitHub Secrets 已配置："
+      #       echo "- KEY_JKS: 签名证书的 base64 编码"
+      #       echo "- ALIAS: 证书别名"
+      #       echo "- ANDROID_KEY_PASSWORD: 密钥密码"
+      #       echo "- ANDROID_STORE_PASSWORD: 存储密码"
+      #       exit 1
+      #     fi
+      #     echo "✅ 所有签名密钥配置已就绪"
+
+      # - name: Setup signing certificate
+      #   run: |
+      #     echo "🔑 设置 Android 签名证书..."
+      #     echo "${{ secrets.KEY_JKS }}" | base64 --decode > mobile/android/app-release-key.jks
+      #     echo "✅ 签名证书设置完成"
+
+      # - name: Create key.properties
+      #   run: |
+      #     echo "📝 创建 key.properties 文件..."
+      #     cat > mobile/android/key.properties << EOF
+      #     storePassword=${{ secrets.ANDROID_STORE_PASSWORD }}
+      #     keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+      #     keyAlias=${{ secrets.ALIAS }}
+      #     storeFile=app-release-key.jks
+      #     EOF
+      #     echo "✅ key.properties 创建完成"
+
+      # - name: Build APK
+      #   working-directory: mobile
+      #   run: |
+      #     echo "🚀 开始构建 Android APK..."
+      #     flutter clean
+      #     flutter pub get
+      #     flutter build apk --release --split-per-abi
+      #     echo "✅ APK 构建完成"
+
+      # - name: Verify APK signature
+      #   working-directory: mobile
+      #   run: |
+      #     echo "🔍 验证 APK 签名..."
+      #     APK_PATH="build/app/outputs/flutter-apk"
+      #     for apk in $APK_PATH/*.apk; do
+      #       if [ -f "$apk" ]; then
+      #         echo "检查: $(basename "$apk")"
+      #         if command -v apksigner >/dev/null 2>&1; then
+      #           java -jar $ANDROID_HOME/build-tools/*/lib/apksigner.jar verify --verbose "$apk" || echo "apksigner 验证失败，尝试备用方法"
+      #         fi
+      #         jarsigner -verify -verbose -certs "$apk" && echo "✅ $(basename "$apk") 签名验证通过" || echo "❌ $(basename "$apk") 签名验证失败"
+      #       fi
+      #     done
+
+      - name: Create test release files
         run: |
-          echo "Event: ${{ github.event_name }}"
-          echo "Ref: ${{ github.ref }}"
-          echo "Actor: ${{ github.actor }}"
-          
-          # 只在标签推送或手动触发时运行
-          if [[ "${{ github.ref }}" == refs/tags/v* ]] || [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "Tag push or manual trigger detected, will run build"
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Not a tag push or manual trigger, skipping build"
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  build-sign-android:
-    name: Build, Sign and Release Android APK
-    needs: pre-job
-    permissions:
-      contents: read
-    if: ${{ github.actor != 'dependabot[bot]' && needs.pre-job.outputs.should_run == 'true' }}
-    runs-on: macos-14
-
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-          persist-credentials: false
-
-      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-          cache: 'gradle'
-
-      - name: Setup Flutter SDK
-        uses: subosito/flutter-action@e938fdf56512cc96ef2f93601a5a40bde3801046 # v2.19.0
-        with:
-          channel: 'stable'
-          flutter-version-file: ./mobile/pubspec.yaml
-          cache: true
-
-      - name: Create the Keystore
-        env:
-          KEY_JKS: ${{ secrets.KEY_JKS }}
-        working-directory: ./mobile
-        run: |
-          if [ -z "$KEY_JKS" ]; then
-            echo "Error: KEY_JKS secret is required for release build"
-            exit 1
-          fi
-          echo "Creating keystore for signed release build"
-          echo $KEY_JKS | base64 -d > android/key.jks
-
-      - name: Get Packages
-        working-directory: ./mobile
-        run: flutter pub get
-
-      - name: Generate translation file
-        run: make translation
-        working-directory: ./mobile
-
-      - name: Generate platform APIs
-        run: make pigeon
-        working-directory: ./mobile
-
-      - name: Validate Signing Secrets
-        env:
-          ALIAS: ${{ secrets.ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-        run: |
-          if [ -z "$ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ] || [ -z "$ANDROID_STORE_PASSWORD" ]; then
-            echo "Error: All signing secrets are required (ALIAS, ANDROID_KEY_PASSWORD, ANDROID_STORE_PASSWORD)"
-            exit 1
-          fi
-          echo "All signing secrets are available"
-
-      - name: Build Signed Release APK
-        working-directory: ./mobile
-        env:
-          ALIAS: ${{ secrets.ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-        run: |
-          echo "Building signed release APK..."
-          flutter build apk --release
-          echo "Building signed release APK with ABI splits..."
-          flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64,android-x64
-
-      - name: Verify APK Signature and Generate Checksums
-        working-directory: ./mobile
-        run: |
-          echo "========================================="
-          echo "🔍 APK 签名验证与校验码生成"
-          echo "========================================="
-          
-          # 查找可用的 build-tools 版本
-          BUILD_TOOLS_VERSION=$(ls "$ANDROID_HOME/build-tools/" | sort -V | tail -1)
-          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
-          
-          echo "🔧 Android Build Tools 版本: $BUILD_TOOLS_VERSION"
-          echo "🔧 apksigner 路径: $APKSIGNER"
-          
-          # 创建校验码报告文件
-          CHECKSUM_FILE="apk_checksums.txt"
-          echo "APK 校验码与签名验证报告" > "$CHECKSUM_FILE"
-          echo "生成时间: $(date)" >> "$CHECKSUM_FILE"
-          echo "=========================================" >> "$CHECKSUM_FILE"
-          
-          for apk in build/app/outputs/flutter-apk/*.apk; do
-            if [ -f "$apk" ]; then
-              APK_NAME=$(basename "$apk")
-              APK_SIZE=$(ls -lh "$apk" | awk '{print $5}')
-              
-              echo ""
-              echo "📱 处理 APK: $APK_NAME"
-              echo "📏 文件大小: $APK_SIZE"
-              
-              # 写入报告文件
-              echo "" >> "$CHECKSUM_FILE"
-              echo "📱 APK: $APK_NAME" >> "$CHECKSUM_FILE"
-              echo "📏 文件大小: $APK_SIZE" >> "$CHECKSUM_FILE"
-              
-              # 验证 APK 签名
-              echo "🔐 验证 APK 签名..."
-              if [ -f "$APKSIGNER" ]; then
-                # 使用正确的 apksigner 命令格式
-                if java -jar "$APKSIGNER" verify --verbose "$apk"; then
-                  echo "✅ APK 签名验证成功"
-                  echo "✅ 签名状态: 验证通过" >> "$CHECKSUM_FILE"
-                else
-                  echo "❌ APK 签名验证失败"
-                  echo "❌ 签名状态: 验证失败" >> "$CHECKSUM_FILE"
-                fi
-              else
-                echo "⚠️  apksigner 未找到，使用 jarsigner 验证..."
-                if jarsigner -verify -verbose "$apk" >/dev/null 2>&1; then
-                  echo "✅ APK 签名验证成功 (jarsigner)"
-                  echo "✅ 签名状态: 验证通过 (jarsigner)" >> "$CHECKSUM_FILE"
-                else
-                  echo "❌ APK 签名验证失败 (jarsigner)"  
-                  echo "❌ 签名状态: 验证失败 (jarsigner)" >> "$CHECKSUM_FILE"
-                fi
-              fi
-              
-              # 生成文件校验码
-              echo ""
-              echo "📊 生成文件校验码..."
-              
-              MD5_HASH=$(md5 "$apk" 2>/dev/null | awk '{print $NF}' || md5sum "$apk" | awk '{print $1}')
-              SHA1_HASH=$(shasum -a 1 "$apk" | awk '{print $1}')
-              SHA256_HASH=$(shasum -a 256 "$apk" | awk '{print $1}')
-              
-              echo "🔹 MD5:    $MD5_HASH"
-              echo "🔹 SHA1:   $SHA1_HASH" 
-              echo "🔹 SHA256: $SHA256_HASH"
-              
-              # 写入校验码到报告文件
-              echo "🔹 MD5:    $MD5_HASH" >> "$CHECKSUM_FILE"
-              echo "🔹 SHA1:   $SHA1_HASH" >> "$CHECKSUM_FILE"
-              echo "🔹 SHA256: $SHA256_HASH" >> "$CHECKSUM_FILE"
-              
-              echo "========================================="
-            fi
-          done
-          
-          echo ""
-          echo "✅ 所有 APK 处理完成!"
-          echo ""
-          echo "📄 完整校验码报告:"
-          cat "$CHECKSUM_FILE"
-
-      - name: Check GitHub Token Permissions
-        run: |
-          echo "🔍 检查 GitHub Token 权限..."
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Actor: $GITHUB_ACTOR"  
-          echo "Event: $GITHUB_EVENT_NAME"
-          echo "Ref: $GITHUB_REF"
-          
-          # 测试 API 访问权限
-          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-               -H "Accept: application/vnd.github.v3+json" \
-               "https://api.github.com/repos/$GITHUB_REPOSITORY" \
-               -o /dev/null -s -w "API Status: %{http_code}\n"
-
-      - name: Prepare Release Files
-        run: |
-          echo "📦 准备发布文件..."
-          
-          # 创建根目录的发布目录（参考你成功的项目）
+          echo "📦 创建测试文件用于 Release..."
           mkdir -p release-files
           
-          # 复制 APK 文件到发布目录
-          cp mobile/build/app/outputs/flutter-apk/*.apk release-files/ 2>/dev/null || echo "No APK files found"
+          # 创建模拟的 APK 文件
+          echo "这是一个测试 APK 文件 - 通用版本" > release-files/app-release.apk
+          echo "这是一个测试 APK 文件 - ARM64 版本" > release-files/app-arm64-v8a-release.apk
+          echo "这是一个测试 APK 文件 - ARM32 版本" > release-files/app-armeabi-v7a-release.apk
+          echo "这是一个测试 APK 文件 - x86_64 版本" > release-files/app-x86_64-release.apk
           
-          # 复制校验码文件
-          cp mobile/apk_checksums.txt release-files/ 2>/dev/null || echo "No checksum file found"
+          # 创建校验码文件
+          cat > release-files/apk_checksums.txt << EOF
+          # APK 文件校验码 (测试版本)
+          # 生成时间: $(date)
+          # 标签版本: ${{ github.ref_name }}
           
-          echo "📋 发布文件列表:"
+          ## MD5 校验码
+          $(md5sum release-files/*.apk | sed 's|release-files/||')
+          
+          ## SHA1 校验码  
+          $(sha1sum release-files/*.apk | sed 's|release-files/||')
+          
+          ## SHA256 校验码
+          $(sha256sum release-files/*.apk | sed 's|release-files/||')
+          EOF
+          
+          echo "📋 测试文件列表:"
           ls -la release-files/
 
       - name: Create GitHub Release with GitHub CLI
@@ -238,15 +117,15 @@ jobs:
           echo "🚀 使用 GitHub CLI 创建 Release..."
           
           # 创建发布说明
-          RELEASE_BODY="## Immich Mobile App Release ${{ github.ref_name }}
+          RELEASE_BODY="## Immich Mobile App Release ${{ github.ref_name }} (测试版本)
 
-          这是 Immich 移动应用的发布版本。
+          这是 Immich 移动应用的测试发布版本。
 
           **标签版本**: ${{ github.ref_name }}
           **构建时间**: ${{ github.run_id }}
           **提交哈希**: ${{ github.sha }}
 
-          ### 📱 APK 文件
+          ### 📱 APK 文件 (测试文件)
 
           请下载适合你设备架构的 APK 文件：
           - \`app-release.apk\` - 通用版本（推荐）
@@ -261,9 +140,7 @@ jobs:
 
           ### 📋 安装说明
 
-          1. 下载适合你设备架构的 APK 文件
-          2. 在 Android 设备上启用\"未知来源\"安装
-          3. 安装下载的 APK 文件
+          ⚠️ **注意：这是测试版本，包含的是测试文件，不是真实的 APK！**
 
           ### 源码
           基于提交: ${{ github.sha }}"
@@ -283,7 +160,7 @@ jobs:
           ls -la release-files/
           
           if gh release create "${{ github.ref_name }}" \
-            --title "Immich Mobile ${{ github.ref_name }}" \
+            --title "Immich Mobile ${{ github.ref_name }} (测试)" \
             --notes "$RELEASE_BODY" \
             $PRERELEASE_FLAG \
             release-files/*; then
@@ -307,7 +184,7 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/releases" \
               -d "{
                 \"tag_name\": \"${{ github.ref_name }}\",
-                \"name\": \"Immich Mobile ${{ github.ref_name }}\",
+                \"name\": \"Immich Mobile ${{ github.ref_name }} (测试)\",
                 \"body\": \"$RELEASE_BODY\",
                 \"draft\": false,
                 \"prerelease\": $PRERELEASE_BOOL
