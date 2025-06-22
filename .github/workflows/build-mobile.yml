@@ -5,6 +5,16 @@ on:
     tags:
       - 'v*'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write  # 需要写权限来创建 GitHub Release
+  actions: write   # Actions 权限
+  packages: write  # 包权限
+  id-token: write  # ID token 权限
+
 jobs:
   build:
     runs-on: macos-14
@@ -82,22 +92,68 @@ jobs:
       #       fi
       #     done
 
+      - name: Check GitHub Token Permissions
+        run: |
+          echo "🔍 检查 GitHub Token 权限..."
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Actor: $GITHUB_ACTOR"  
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Ref: $GITHUB_REF"
+          echo "Ref Name: ${{ github.ref_name }}"
+          echo "SHA: $GITHUB_SHA"
+          
+          # 测试 API 访问权限
+          echo "🔍 测试 GitHub API 访问权限..."
+          HTTP_CODE=$(curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/vnd.github.v3+json" \
+               "https://api.github.com/repos/$GITHUB_REPOSITORY" \
+               -o /dev/null -s -w "%{http_code}")
+          echo "API Status Code: $HTTP_CODE"
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ GitHub API 访问成功"
+          else
+            echo "❌ GitHub API 访问失败，状态码: $HTTP_CODE"
+          fi
+          
+          # 测试 Releases API 权限
+          echo "🔍 测试 Releases API 权限..."
+          HTTP_CODE=$(curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/vnd.github.v3+json" \
+               "https://api.github.com/repos/$GITHUB_REPOSITORY/releases" \
+               -o /dev/null -s -w "%{http_code}")
+          echo "Releases API Status Code: $HTTP_CODE"
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Releases API 访问成功"
+          else
+            echo "❌ Releases API 访问失败，状态码: $HTTP_CODE"
+          fi
+
       - name: Create test release files
         run: |
           echo "📦 创建测试文件用于 Release..."
           mkdir -p release-files
           
-          # 创建模拟的 APK 文件
-          echo "这是一个测试 APK 文件 - 通用版本" > release-files/app-release.apk
-          echo "这是一个测试 APK 文件 - ARM64 版本" > release-files/app-arm64-v8a-release.apk
-          echo "这是一个测试 APK 文件 - ARM32 版本" > release-files/app-armeabi-v7a-release.apk
-          echo "这是一个测试 APK 文件 - x86_64 版本" > release-files/app-x86_64-release.apk
+          # 创建模拟的 APK 文件 (稍大一些，模拟真实APK)
+          dd if=/dev/zero of=release-files/app-release.apk bs=1024 count=1024 2>/dev/null
+          echo "这是一个测试 APK 文件 - 通用版本" >> release-files/app-release.apk
+          
+          dd if=/dev/zero of=release-files/app-arm64-v8a-release.apk bs=1024 count=800 2>/dev/null
+          echo "这是一个测试 APK 文件 - ARM64 版本" >> release-files/app-arm64-v8a-release.apk
+          
+          dd if=/dev/zero of=release-files/app-armeabi-v7a-release.apk bs=1024 count=900 2>/dev/null
+          echo "这是一个测试 APK 文件 - ARM32 版本" >> release-files/app-armeabi-v7a-release.apk
+          
+          dd if=/dev/zero of=release-files/app-x86_64-release.apk bs=1024 count=1100 2>/dev/null
+          echo "这是一个测试 APK 文件 - x86_64 版本" >> release-files/app-x86_64-release.apk
           
           # 创建校验码文件
           cat > release-files/apk_checksums.txt << EOF
           # APK 文件校验码 (测试版本)
           # 生成时间: $(date)
           # 标签版本: ${{ github.ref_name }}
+          # 构建编号: ${{ github.run_id }}
           
           ## MD5 校验码
           $(md5sum release-files/*.apk | sed 's|release-files/||')
@@ -109,112 +165,75 @@ jobs:
           $(sha256sum release-files/*.apk | sed 's|release-files/||')
           EOF
           
-          echo "📋 测试文件列表:"
-          ls -la release-files/
-
-      - name: Create GitHub Release with GitHub CLI
-        run: |
-          echo "🚀 使用 GitHub CLI 创建 Release..."
+          # 创建发布说明文件
+          cat > release-files/RELEASE_NOTES.md << EOF
+          # Immich Mobile App Release ${{ github.ref_name }} (测试版本)
           
-          # 创建发布说明
-          RELEASE_BODY="## Immich Mobile App Release ${{ github.ref_name }} (测试版本)
-
-          这是 Immich 移动应用的测试发布版本。
-
+          ⚠️ **这是测试版本，包含的是测试文件，不是真实的 APK！**
+          
           **标签版本**: ${{ github.ref_name }}
           **构建时间**: ${{ github.run_id }}
           **提交哈希**: ${{ github.sha }}
-
-          ### 📱 APK 文件 (测试文件)
-
+          
+          ## 📱 APK 文件 (测试文件)
+          
           请下载适合你设备架构的 APK 文件：
           - \`app-release.apk\` - 通用版本（推荐）
           - \`app-arm64-v8a-release.apk\` - ARM64 设备
           - \`app-armeabi-v7a-release.apk\` - ARM 32位设备  
           - \`app-x86_64-release.apk\` - x86 64位设备
-
-          ### 🔐 安全验证
-
+          
+          ## 🔐 安全验证
+          
           - 下载 \`apk_checksums.txt\` 文件验证 APK 完整性
-          - 所有 APK 文件均已签名，确保安全可靠
-
-          ### 📋 安装说明
-
-          ⚠️ **注意：这是测试版本，包含的是测试文件，不是真实的 APK！**
-
-          ### 源码
-          基于提交: ${{ github.sha }}"
+          - 测试文件已包含校验码
           
-          # 检查是否是预发布版本
-          if [[ "${{ github.ref_name }}" == *"beta"* ]] || [[ "${{ github.ref_name }}" == *"alpha"* ]] || [[ "${{ github.ref_name }}" == *"rc"* ]]; then
-            PRERELEASE_FLAG="--prerelease"
-          else
-            PRERELEASE_FLAG=""
-          fi
+          ## 📋 测试说明
           
-          # 尝试使用 gh CLI 创建 release
-          echo "📝 Release 内容预览:"
-          echo "标签: ${{ github.ref_name }}"
-          echo "文件数量: $(ls -1 release-files/ | wc -l)"
-          echo "文件列表:"
+          这是用于测试 GitHub Actions Release 功能的版本。
+          文件内容为测试数据，请勿用于生产环境。
+          
+          ## 源码
+          基于提交: ${{ github.sha }}
+          EOF
+          
+          echo "📋 测试文件列表:"
+          ls -la release-files/
+          echo ""
+          echo "📄 文件大小统计:"
+          du -h release-files/*
+
+      - name: Debug Release Files
+        run: |
+          echo "🔍 调试发布文件信息..."
+          echo "当前工作目录: $(pwd)"
+          echo "标签名称: ${{ github.ref_name }}"
+          echo "是否预发布: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}"
+          
+          echo ""
+          echo "📋 发布文件详情:"
           ls -la release-files/
           
-          if gh release create "${{ github.ref_name }}" \
-            --title "Immich Mobile ${{ github.ref_name }} (测试)" \
-            --notes "$RELEASE_BODY" \
-            $PRERELEASE_FLAG \
-            release-files/*; then
-            echo "✅ GitHub CLI Release 创建成功!"
-          else
-            echo "❌ GitHub CLI 失败，尝试使用 curl API..."
-            
-            # 备用方案：使用 curl 直接调用 GitHub API
-            echo "🔄 使用 curl 创建 Release..."
-            
-            # 构建 JSON 数据
-            PRERELEASE_BOOL="false"
-            if [[ "${{ github.ref_name }}" == *"beta"* ]] || [[ "${{ github.ref_name }}" == *"alpha"* ]] || [[ "${{ github.ref_name }}" == *"rc"* ]]; then
-              PRERELEASE_BOOL="true"
-            fi
-            
-            # 创建 Release
-            RELEASE_RESPONSE=$(curl -X POST \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/${{ github.repository }}/releases" \
-              -d "{
-                \"tag_name\": \"${{ github.ref_name }}\",
-                \"name\": \"Immich Mobile ${{ github.ref_name }} (测试)\",
-                \"body\": \"$RELEASE_BODY\",
-                \"draft\": false,
-                \"prerelease\": $PRERELEASE_BOOL
-              }")
-            
-            RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id // empty')
-            
-            if [ -n "$RELEASE_ID" ]; then
-              echo "✅ Release 创建成功 (ID: $RELEASE_ID)"
-              
-              # 上传文件
-              for file in release-files/*; do
-                if [ -f "$file" ]; then
-                  filename=$(basename "$file")
-                  echo "📤 上传: $filename"
-                  
-                  curl -X POST \
-                    -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                    -H "Content-Type: application/octet-stream" \
-                    --data-binary @"$file" \
-                    "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$filename"
-                  
-                  echo "✅ $filename 上传完成"
-                fi
-              done
-            else
-              echo "❌ Release 创建失败"
-              echo "API 响应: $RELEASE_RESPONSE"
-              exit 1
-            fi
-          fi
+          echo ""
+          echo "📄 发布说明内容:"
+          cat release-files/RELEASE_NOTES.md
+          
+          echo ""
+          echo "🔐 校验码文件内容:"
+          head -20 release-files/apk_checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Immich Mobile ${{ github.ref_name }} (测试版本)"
+          body_path: release-files/RELEASE_NOTES.md
+          files: |
+            release-files/*.apk
+            release-files/apk_checksums.txt
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false 
